@@ -12,7 +12,7 @@ class RobotConnection:
         self.client = None
         self.lock = threading.Lock()
         self.server_thread = None
-        self.server_soket = None
+        self.server_socket = None
         self.connected_event = threading.Event()
 
     def start_server(self):
@@ -34,7 +34,7 @@ class RobotConnection:
         # Oppretter kominikasjon med roboten
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
-                self.server_soket = server
+                self.server_socket = server
                 server.setsockopt(
                     socket.SOL_SOCKET, socket.SO_REUSEADDR, 1
                 )
@@ -66,7 +66,7 @@ class RobotConnection:
             self.connected_event.clear()
             with self.lock:
                 self.client = None
-            self.server_soket = None
+            self.server_socket = None
 
 
 
@@ -115,5 +115,5 @@ class RobotConnection:
             self.connected_event.clear()
 
         # If it is connected, then close it 
-        if self.server_soket:
-            self.server_soket.close()
+        if self.server_socket:
+            self.server_socket.close()

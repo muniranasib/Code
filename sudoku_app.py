@@ -5,6 +5,7 @@ import random
 from config import MODE
 
 from sudoku_data import load_puzzles
+from sudoku_solver import is_valid_board, is_valid_solution, solve_sudoku 
 
 
 
@@ -88,7 +89,8 @@ class SudokuApp:
     
 
     def new_puzzle(self):
-        self.puzzle, self.solution = random.choice(self.puzzles)
+        self.puzzle, _ = random.choice(self.puzzles)
+        self.solution = ""
 
         # A puzzle starts a new sending sequence.
         self.sent_values.clear()
@@ -178,6 +180,12 @@ class SudokuApp:
 
 
     def show_solution(self):
+        try:
+            self.solution = solve_sudoku(self.puzzle)
+        except ValueError as exc:
+            messagebox.showerror("Sudoku", str(exc))
+            return 
+        
         for r in range(4):
             for c in range(4):
                 idx = r * 4 + c
@@ -191,6 +199,8 @@ class SudokuApp:
 
         self.status.set("Solution displayed. Press the robot to send changes")
 
+
+
     def check_entries(self):
         current = ""
 
@@ -198,17 +208,20 @@ class SudokuApp:
             for c in range(4):
                 current += self.cells[r][c].get().strip() or "0"
 
-        if current == self.solution:
-            messagebox.showinfo("Sudoku", "Correct — all cells match the solution.")
+        if not is_valid_board(self.puzzle, current):
+            messagebox.showinfo("Sudoku", "Invalid entries: some numbers are not valid.")
+
+        elif is_valid_solution(self.puzzle, current):
+            messagebox.showinfo("Sudoku", "Correct — valid Sudoku solution!")
 
         else:
-            messagebox.showinfo("Sudoku", "Not complete or not correct yet.")
+            messagebox.showinfo("Sudoku", "So far correct, but the board is not complete")
 
 
 if __name__ == "__main__":
     root = tk.Tk()
 
-    # Standalone GUI mode does not have a robot connection.
+    # Standalone mode: no robot connection, just the GUI for testing and playing Sudoku.
     class NoRobot:
         def send_line(self, line):
             raise ConnectionError(

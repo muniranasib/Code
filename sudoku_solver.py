@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 DIGITS = "1234"
-GRID_SIZE = 4
-BOX_SIZE = 2
+GRID_SIZE = 4 # Validating number in rows and columns
+BOX_SIZE = 2 # Validating the numbers in to by to boxes
 
 
 def _normalise_puzzle(puzzle: str) -> list[str]:
-    # Validate and converts a puzzle string into a mutable board
+    # Validate start board nd converts a puzzle string into a mutable board
     if not isinstance(puzzle, str):
         raise TypeError("Puzzle must be a string of 16 characters.")
 
@@ -36,7 +36,7 @@ def _normalise_puzzle(puzzle: str) -> list[str]:
 
 
 def _can_place(board: list[str], pos: int, digit: str) -> bool:
-    # Cheking if it is valid to place a digit at a given position in the board
+    "Cheking if it is valid to place a digit at a given position in the board"
     row, col = divmod(pos, GRID_SIZE)
 
     for c in range(GRID_SIZE):
@@ -57,8 +57,53 @@ def _can_place(board: list[str], pos: int, digit: str) -> bool:
     return True
 
 
+def is_valid_board(initial_puzzle, current_board):
+    "Check whether the current board follows Sudoku rules and preserves the original clues."
+    if not isinstance(initial_puzzle, str) or not isinstance(current_board, str):
+        return False
+
+    if len(initial_puzzle) != 16 or len(current_board) != 16:
+        return False
+
+    if not set(current_board) <= set("01234"):
+        return False
+
+    try:
+        _normalise_puzzle(initial_puzzle)
+    except (TypeError, ValueError):
+        return False
+
+    # Check that the original clues have not been changed
+    for pos, digit in enumerate(initial_puzzle):
+        if digit != "0" and current_board[pos] != digit:
+            return False
+
+    # Check that all placed numbers follow Sudoku rules
+    board = list(current_board)
+
+    for pos, digit in enumerate(board):
+        if digit != "0":
+            board[pos] = "0"
+            valid = _can_place(board, pos, digit)
+            board[pos] = digit
+
+            if not valid:
+                return False
+
+    return True  
+
+
+def is_valid_solution(initial_puzzle: str, current_board: str) -> bool:
+    "Check whether the current board is a complete and valid solution."
+
+    if not is_valid_board(initial_puzzle, current_board):
+        return False
+
+    return "0" not in current_board
+
+
 def _search(board: list[str], solutions: list[str], limit: int) -> None:
-    # Recursive backtracking search for solutions to the Sudoku puzzle
+    " Recursive backtracking search for solutions to the Sudoku puzzle"
     if len(solutions) >= limit:
         return
 
@@ -91,53 +136,23 @@ def _search(board: list[str], solutions: list[str], limit: int) -> None:
 
 
 
-
-#### MULIG AT DETTE IKKE ER NØDVENDIG
-def count_solutions(puzzle: str, limit: int = 2) -> int:
-    """Count the number of solutions for a given 4x4 Sudoku puzzle.
-    Stop counting when the number of solutions reaches the specified limit.
-    """
-    if limit < 1:
-        raise ValueError("limit must be at least 1")
-    
-    board = _normalise_puzzle(puzzle)
-    solutions: list[str] = []
-
-    _search(board, solutions, limit)
-    return len(solutions)
-
-
 def solve_sudoku(puzzle: str) -> str:
-    """Solve a 4x4 Sudoku puzzle and return the solution as a string.
-    Raises a ValueError if the puzzle has no solution or multiple solutions.
-    """
+    "Solve a 4x4 Sudoku puzzle and return the first solution found. "
     board = _normalise_puzzle(puzzle)
     solutions: list[str] = []
 
-    _search(board, solutions, limit=2)
+    _search(board, solutions, limit=1)
 
-    return solutions[0] if solutions else None
-
-
-def solve_unique(puzzle: str) -> str | None:
-    """Cheking if the puzzle has a solution, only one, or many different solutions (> 2)"""
-    board = _normalise_puzzle(puzzle)
-
-    solutions: list[str] = []
-
-    _search(board, solutions, limit=2)
     if not solutions:
-        raise ValueError("Puzzle has no solutions.")
-
-    if len(solutions) > 1:
-        raise ValueError("Puzzle has multipe solutions.")
-
+        raise ValueError("Puzzle has no solution.")
     return solutions[0]
 
 
+
 def format_board(board: str) -> str:
-    """Format a 16-character board as four readable rows."""
+    "Format a 16-character board as four readable rows."
     if len(board) != 16:
         raise ValueError("Board must contain 16 characters.")
+    
     rows = [" ".join(board[r * 4:(r + 1) * 4]) for r in range(4)]
     return "\n".join(rows)
