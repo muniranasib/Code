@@ -1,13 +1,10 @@
 
-
-
-
 import argparse
 from pathlib import Path
 
 import cv2
 import numpy as np
-
+from sudoku_solver import format_board
 
 BOARD_PIXELS = 800
 
@@ -147,6 +144,78 @@ def get_cell_centers(board_image):
 
 
 
+def normalize_digit(cell):
+    """Extract and normalize a handwritten digit."""
+
+    # Remove the cell borders
+    height, width = cell.shape[:2]
+
+    margin_x = int(width * 0.12)
+    margin_y = int(height * 0.12)
+
+    cell = cell[
+        margin_y:height - margin_y,
+        margin_x:width - margin_x
+    ]
+
+    # Convert to grayscale
+    gray = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
+
+    # Threshold: black background, white handwriting
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    _, binary = cv2.threshold(
+        blurred,
+        0,
+        255,
+        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+
+    # Find the area containing the handwriting
+    points = cv2.findNonZero(binary)
+
+    if points is None:
+        raise ValueError("No digit found in cell.")
+
+    x, y, w, h = cv2.boundingRect(points)
+
+    digit = binary[y:y + h, x:x + w]
+
+    # Resize while preserving the aspect ratio
+    canvas_size = 64
+    padding = 8
+
+    scale = min(
+        (canvas_size - 2 * padding) / w,
+        (canvas_size - 2 * padding) / h
+    )
+
+    new_width = max(1, round(w * scale))
+    new_height = max(1, round(h * scale))
+
+    resized = cv2.resize(
+        digit,
+        (new_width, new_height),
+        interpolation=cv2.INTER_AREA
+    )
+
+    # Place the digit in the center of a black canvas
+    canvas = np.zeros((canvas_size, canvas_size), dtype=np.uint8)
+
+    x_offset = (canvas_size - new_width) // 2
+    y_offset = (canvas_size - new_height) // 2
+
+    canvas[
+        y_offset:y_offset + new_height,
+        x_offset:x_offset + new_width
+    ] = resized
+
+    return canvas
+
+
+
+
+
 def process_image(image_path, output_dir):
     image_path = Path(image_path).expanduser().resolve()
     image = cv2.imread(str(image_path))
@@ -182,6 +251,103 @@ def process_image(image_path, output_dir):
 
 
 
+"""
+Number recognition
+"""
+
+def preprocess_cell(cell):
+    "Prepare a sudoku cell for further analysis."
+
+    # Convert cell to grayscale
+    gray = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
+
+    # Apply Gaussian blur to reduce noise and improve thresholding
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    # Convert to binary image (black or white - no gray tones)
+    _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    normalized = cv2.resize(binary, (64, 64), interpolation=cv2.INTER_AREA)
+
+    # Remove gray vaøues introduced by resizing
+    _, normalized_binary = cv2.threshold(normalized, 127, 255, cv2.THRESH_BINARY)
+    return normalized_binary
+
+
+
+
+### TESTING ###
+def test_preprocess_cell(cell):
+    """Display the original and preprocessed cell for comparison."""
+
+    normalized = preprocess_cell(cell)
+
+    cv2.imshow("Original cell", cell)
+    cv2.imshow("Preprocessed cell", normalized)
+
+    cv2.imwrite("test_original.png", cell)
+    cv2.imwrite("test_preprocessed.png", normalized)
+
+    print("Image size:", normalized.shape)
+    print("Pixel values:", set(normalized.flatten()))
+
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
+
+def is_empty_cell(cell):
+    " Checks if a cell is empty."
+    "Returns True if the cell is empty, False otherwise."
+
+    binary = preprocess_cell(cell)
+
+    white_pixels = cv2.countNonZero(binary) # Count white cells
+    total_pixels = binary.size
+
+    pixel_ratio = white_pixels / total_pixels # Calculate the ratio of white pixels to total pixels
+
+    print(f"White pixel ratio: {pixel_ratio:.4f}")  # Debugging output
+
+    return pixel_ratio < 0.05  # Adjust threshold as needed
+
+
+def recognize_digit(cell):
+    "Identifies digit (1, 2, 3 or 4)"
+    "Template Matching - algorithm"
+
+    binary = preprocess_cell(cell)
+
+    # This is a placeholder for the actual digit recognition logic.
+
+    # Compare the preprocessed cell with templates for digits 1-4
+    
+    # Find the best maching template and return the corresponding digit.
+
+    return "0"
+
+def recognize_board(cells):
+    "Recognizes all cells cells and builds a string representation of the board."
+
+    sudoku_string = ""
+
+    for row in range(4):
+        for col in range(4):
+            cell = cells[row][col]
+
+            if is_empty_cell(cell):
+                sudoku_string += "0"
+            else:
+                digit = recognize_digit(cell)
+                sudoku_string += str(digit)
+
+    return sudoku_string
+
+
+    
+
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Find and rectify a printed 4x4 Sudoku board."
@@ -203,6 +369,23 @@ def main():
     args = parser.parse_args()
 
     result = process_image(args.image, args.output_dir)
+
+    ######TESTING######
+    test_preprocess_cell(result["cells"][1][0])
+
+    # Tester at alle cellene er tomme eller ikke
+    for row in range(4):
+        for col in range(4):
+            empty = is_empty_cell(result["cells"][row][col])
+            print(f"Row {row + 1}, Col {col + 1}: Empty = {empty}")
+
+    #Tilbake til vanlig main-funksjon
+    #ish
+    sudoku_string = recognize_board(result["cells"])
+
+    print("Recognized Sudoku: ")
+    print(format_board(sudoku_string))
+
 
     #Center of each cell
     centers = get_cell_centers(result["board_image"])

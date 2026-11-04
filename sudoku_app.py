@@ -143,7 +143,7 @@ class SudokuApp:
 
             # Send the selected numbers to the robot
             for r, c, digit in targets:
-                command = f"WRITE {r + 1}  {c + 1} {digit}"
+                command = f"WRITE {r + 1} {c + 1} {digit}"
                 reply = self.robot.send_line(command)
 
                 if reply not in ("OK", "SIMULATED"):
