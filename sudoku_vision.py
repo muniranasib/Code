@@ -4,9 +4,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from project_paths import TEMPLATE_DIR
 from sudoku_solver import format_board
 
 BOARD_PIXELS = 800
+MACTH_THRESHOLD = 0.35  # Threshold for template matching
 
 def order_corners(points):
     # Order of the corners: top-left, top, right, bottom right, bottom-left
@@ -298,11 +300,19 @@ def test_preprocess_cell(cell):
 
 def is_empty_cell(cell):
     " Checks if a cell is empty."
-    "Returns True if the cell is empty, False otherwise."
 
-    binary = preprocess_cell(cell)
+    # Removed the cell boarders
+    height, width = cell.shape[:2]
 
-    white_pixels = cv2.countNonZero(binary) # Count white cells
+    margin_x = int(width * 0.12)
+    margin_y = int(height * 0.12)
+
+    cell = cell[margin_y:height - margin_y, margin_x:width - margin_x]
+
+    binary = preprocess_cell(cell)  # Preprocess the cell to get a binary image
+
+    # Count the number of white pixels in the binary image
+    white_pixels = cv2.countNonZero(binary) 
     total_pixels = binary.size
 
     pixel_ratio = white_pixels / total_pixels # Calculate the ratio of white pixels to total pixels
@@ -312,21 +322,65 @@ def is_empty_cell(cell):
     return pixel_ratio < 0.05  # Adjust threshold as needed
 
 
-def recognize_digit(cell):
+def load_digit_templates():
+    " Loading all digit templetes from the training data folder"
+
+    templates = {}
+
+    for digit in "1234":
+        digit_folder = TEMPLATE_DIR / digit
+        digit_templates = []
+
+        for image_path in digit_folder.glob("*.png"):
+            template = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+
+            if template is None:
+                raise OSError(f"Could not load template image: {image_path}")
+
+            digit_templates.append(template)
+
+        if not digit_templates:
+            raise FileNotFoundError(f"No templates found for digit '{digit}' in {digit_folder}")
+
+        templates[digit] = digit_templates
+    return templates
+
+
+def recognize_digit(cell, templates):
     "Identifies digit (1, 2, 3 or 4)"
     "Template Matching - algorithm"
 
-    binary = preprocess_cell(cell)
+    # Normalize the cell to a binary image
+    digit_image = normalize_digit(cell)
 
-    # This is a placeholder for the actual digit recognition logic.
+    best_digit = None
+    best_score = -1
 
-    # Compare the preprocessed cell with templates for digits 1-4
-    
-    # Find the best maching template and return the corresponding digit.
+    # Compare with all stored templates
+    for digit, digit_templates in templates.items():
 
-    return "0"
+        for template in digit_templates:
+                # Match the template with the cell image
+                result = cv2.matchTemplate(digit_image, template, cv2.TM_CCOEFF_NORMED)
+                score = float(result[0][0]) # Get the matching score
 
-def recognize_board(cells):
+                if score > best_score:
+                    best_score = score
+                    best_digit = digit
+
+    if best_score < MACTH_THRESHOLD:
+        raise ValueError(
+            f"Uncertain digit recognition. "
+            f"Best match: {best_digit}, score: {best_score:.3f}"
+        )
+
+    return best_digit
+
+
+
+
+
+def recognize_board(cells, templates):
     "Recognizes all cells cells and builds a string representation of the board."
 
     sudoku_string = ""
@@ -338,8 +392,16 @@ def recognize_board(cells):
             if is_empty_cell(cell):
                 sudoku_string += "0"
             else:
-                digit = recognize_digit(cell)
-                sudoku_string += str(digit)
+                try:
+                    digit = recognize_digit(cell, templates)
+                    sudoku_string += digit
+
+
+                except ValueError as error:
+                     raise ValueError(
+                        f"Recognition failed at row {row}, "
+                        f"column {col}: {error}"
+                    ) from error
 
     return sudoku_string
 
@@ -370,6 +432,9 @@ def main():
 
     result = process_image(args.image, args.output_dir)
 
+    templates = load_digit_templates()
+    sudoku_string = recognize_board(result["cells"], templates)
+
     ######TESTING######
     test_preprocess_cell(result["cells"][1][0])
 
@@ -385,6 +450,7 @@ def main():
 
     print("Recognized Sudoku: ")
     print(format_board(sudoku_string))
+
 
 
     #Center of each cell

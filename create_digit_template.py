@@ -3,6 +3,7 @@ from pathlib import Path
 import cv2
 
 
+from project_paths import BASE_DIR, IMAGE_DIR, TEMPLATE_DIR
 from sudoku_vision import process_image, normalize_digit
 
 """ createing the code to create digit templates from the images of sudoku boards.
@@ -13,9 +14,9 @@ Each digit will have its own folder containing the corresponding templates."""
 # Folder for saving the digit templates and data images
 BASE_DIR = Path(__file__).resolve().parent
 
-TRAING_DATA_DIR = BASE_DIR / "training_data"
-IMAGE_DIR = TRAING_DATA_DIR / "images"
-TEMPLATE_DIR = TRAING_DATA_DIR / "digit_templates"
+TRAINING_DATA_DIR = BASE_DIR / "training_data"
+IMAGE_DIR = TRAINING_DATA_DIR / "images"
+TEMPLATE_DIR = TRAINING_DATA_DIR / "digit_templates"
 
 
 # Positions and corresponding digits in the two images.
@@ -54,7 +55,7 @@ SAMPLES = {
 
 
 
-def create_templates():    
+def create_templates(overwrite=False):    
     # Create folders for each digit
     for digit in "1234":
         digit_folder = TEMPLATE_DIR / digit
