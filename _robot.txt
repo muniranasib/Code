@@ -1,0 +1,727 @@
+MODULE SudokuWriter1
+    
+    ! TCP communication
+    CONST string PC_IP := "192.168.12.69";
+    CONST num PC_PORT := 2222;
+
+    VAR socketdev pcSocket;
+    VAR string receivedCommand;
+    VAR string receivedChar;
+    
+    
+
+    CONST num gridSize := 4;
+
+    ! Large board - updated from Python
+    PERS num largeBoardX := 5;
+    PERS num largeBoardY := 101.5;
+    PERS num largeCellWidth := 50;
+    PERS num largeCellHeight := 50;
+    
+    ! Small board - updated from Python
+    PERS num smallBoardX := 240.5;
+    PERS num smallBoardY := 76.5;
+    PERS num smallCellWidth := 37.5;
+    PERS num smallCellHeight := 37.5;
+    
+    PERS num largeBoardSize := 200;
+    PERS num smallBoardSize := 150;
+
+    CONST num penLift := 30;
+    CONST num digitSize := 22;
+
+    
+    
+    ! Robot parking position - outside camera view
+    PERS robtarget pPark :=
+        [[662.6733,353.9812,179.4072],[0.02900976,0.000860723,0.9995788,4.246822E-05],[0,2,-3,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+         
+     
+     
+    PERS tooldata toolPen :=
+        [TRUE,[[0,0,75],[1,0,0,0]],
+        [0.1,[0,0,75],[1,0,0,0],0,0,0]];
+
+    PERS wobjdata wobjA3 :=
+        [FALSE,TRUE,"",
+        [[561.96,-199.06,0],[0.7071068,0,0,0.7071068]],
+        [[0,0,0],[1,0,0,0]]];
+
+    ! Temporary reference targets from the working motion test.
+    PERS robtarget pStart :=
+        [[5,-48.5,8],
+         [0.029043357,0.000895114,0.999577752,-0.000026131],
+         [0,1,-2,1],
+         [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+    PERS robtarget pEnd :=
+        [[205,-48.5,8],
+         [0.029043357,0.000895114,0.999577752,-0.000026131],
+         [0,1,-2,1],
+         [9E9,9E9,9E9,9E9,9E9,9E9]];
+         
+    PERS num sudokuBoard{4,4} := [
+        [4,2,0,0],
+        [0,4,0,2],
+        [2,0,4,0],
+        [0,3,0,1]
+    ];
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!             WriteDigit                       !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!   
+    
+    PROC WriteDigit(
+        num board,
+        num row,
+        num col,
+        num digit)
+
+        VAR num cellSize;
+        VAR num boardX;
+        VAR num boardY;
+        VAR num cx;
+        VAR num cy;
+
+        IF row < 1 OR row > gridSize OR
+           col < 1 OR col > gridSize THEN
+            TPWrite "Error: row or column out of range";
+            RETURN;
+        ENDIF
+
+        IF digit < 1 OR digit > 4 THEN
+            TPWrite "Error: digit must be 1-4";
+            RETURN;
+        ENDIF
+
+        IF board = 1 THEN
+            cellSize := largeCellSize;
+            boardX := largeBoardX;
+            boardY := largeBoardY;
+        ELSEIF board = 2 THEN
+            cellSize := smallCellSize;
+            boardX := smallBoardX;
+            boardY := smallBoardY;
+        ELSE
+            TPWrite "Error: board must be 1 or 2";
+            RETURN;
+        ENDIF
+
+        cx := boardX + (col - 0.5) * cellSize;
+        cy := boardY - (row - 0.5) * cellSize;
+
+        TPWrite "Board: "\Num:=board;
+        TPWrite "Row: "\Num:=row;
+        TPWrite "Column: "\Num:=col;
+        TPWrite "Digit: "\Num:=digit;
+        TPWrite "Cell X: "\Num:=cx;
+        TPWrite "Cell Y: "\Num:=cy;
+
+        ! Select the drawing procedure for the requested digit
+        IF digit = 1 THEN
+            DrawDigit1 cx, cy, cellSize;
+        ELSEIF digit = 2 THEN
+            DrawDigit2 cx, cy, cellSize;
+        ELSEIF digit = 3 THEN
+            DrawDigit3 cx, cy, cellSize;
+        ELSEIF digit = 4 THEN
+            DrawDigit4 cx, cy, cellSize;
+        ELSE
+            TPWrite "Digit must be between 1 and 4";
+            RETURN;
+        ENDIF
+    ENDPROC
+
+ PROC WriteDigitAt(
+    num cx,
+    num cy,
+    num cellSize,
+    num digit)
+
+    IF digit < 1 OR digit > 4 THEN
+        TPWrite "Error: invalid digit";
+        RETURN;
+    ENDIF
+
+    IF digit = 1 THEN
+        DrawDigit1 cx, cy, cellSize;
+    ELSEIF digit = 2 THEN
+        DrawDigit2 cx, cy, cellSize;
+    ELSEIF digit = 3 THEN
+        DrawDigit3 cx, cy, cellSize;
+    ELSEIF digit = 4 THEN
+        DrawDigit4 cx, cy, cellSize;
+    ENDIF
+
+ENDPROC
+    
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!           GoToPark                           !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    
+    PROC GoToPark()
+    
+        TPWrite "Moving to parking position";
+    
+        MoveJ pPark, V50, fine, toolPen\WObj:=wobjA3;
+    
+        TPWrite "Robot parked";
+    
+    ENDPROC
+        
+    
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!           ProcessCommand                     !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+ 
+    PROC ProcessCommand(string command)
+    
+        VAR num board;
+        VAR num row;
+        VAR num col;
+        VAR num digit;
+        VAR bool conversionOK;
+    
+        TPWrite "1: Command received";
+        TPWrite "Received: " + command;
+    
+        ! Handle PING first
+        IF command = "PING" THEN
+    
+            TPWrite "PING received from Python";
+    
+            SocketSend pcSocket \Str:="PONG\0A";
+    
+            TPWrite "PONG sent to Python";
+    
+            RETURN;
+    
+        ENDIF
+        
+        
+        ! Handle PARK
+        IF command = "PARK" THEN
+        
+            TPWrite "PARK command received";
+        
+            GoToPark;
+        
+            SocketSend pcSocket \Str:="OK\0A";
+        
+            TPWrite "Robot parked";
+        
+            RETURN;
+        
+        ENDIF
+        
+        
+        ! Handle DONE
+        IF command = "DONE" THEN
+        
+            TPWrite "Sudoku board completed";
+        
+            GoToPark;
+        
+            SocketSend pcSocket \Str:="OK\0A";
+        
+            TPWrite "Robot returned to parking position";
+        
+            RETURN;
+        
+        ENDIF
+    
+        ! Check command type
+        IF StrPart(command,1,5) <> "WRITE" THEN
+            TPWrite "ERROR: Invalid command";
+            SocketSend pcSocket \Str:="ERROR\0A";
+            RETURN;
+        ENDIF
+    
+        ! Check command length
+        IF StrLen(command) <> 13 THEN
+            TPWrite "ERROR: Invalid command length";
+            SocketSend pcSocket \Str:="ERROR\0A";
+            RETURN;
+        ENDIF
+    
+        ! Check spaces
+        IF StrPart(command,6,1) <> " " OR
+           StrPart(command,8,1) <> " " OR
+           StrPart(command,10,1) <> " " OR
+           StrPart(command,12,1) <> " " THEN
+    
+            TPWrite "ERROR: Invalid spaces";
+            SocketSend pcSocket \Str:="ERROR\0A";
+            RETURN;
+        ENDIF
+    
+        ! Convert board ID
+        conversionOK := StrToVal(StrPart(command,7,1), board);
+        IF NOT conversionOK THEN
+            SocketSend pcSocket \Str:="ERROR\0A";
+            RETURN;
+        ENDIF
+    
+        ! Convert row
+        conversionOK := StrToVal(StrPart(command,9,1), row);
+        IF NOT conversionOK THEN
+            SocketSend pcSocket \Str:="ERROR\0A";
+            RETURN;
+        ENDIF
+    
+        ! Convert column
+        conversionOK := StrToVal(StrPart(command,11,1), col);
+        IF NOT conversionOK THEN
+            SocketSend pcSocket \Str:="ERROR\0A";
+            RETURN;
+        ENDIF
+    
+        ! Convert digit
+        conversionOK := StrToVal(StrPart(command,13,1), digit);
+        IF NOT conversionOK THEN
+            SocketSend pcSocket \Str:="ERROR\0A";
+            RETURN;
+        ENDIF
+    
+        TPWrite "2: Values converted";
+    
+        ! Validate values
+        IF board < 1 OR board > 2 OR
+           row < 1 OR row > 4 OR
+           col < 1 OR col > 4 OR
+           digit < 1 OR digit > 4 THEN
+    
+            TPWrite "ERROR: Values out of range";
+            SocketSend pcSocket \Str:="ERROR\0A";
+            RETURN;
+        ENDIF
+    
+        TPWrite "Board: " \Num:=board;
+        TPWrite "Row: " \Num:=row;
+        TPWrite "Column: " \Num:=col;
+        TPWrite "Digit: " \Num:=digit;
+    
+        TPWrite "3: Starting WriteDigit";
+    
+        ! Execute robot movement
+        WriteDigit board, row, col, digit;
+    
+        TPWrite "4: WriteDigit completed";
+    
+        ! Send acknowledgement
+        SocketSend pcSocket \Str:="OK\0A";
+    
+        TPWrite "5: OK sent";
+    
+    ENDPROC
+
+    
+    
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!                     1                        !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    
+    
+    
+    PROC DrawDigit1(num cx, num cy, num cellSize)
+        VAR num s;
+        VAR robtarget pStart;
+        VAR robtarget pJoin;
+        VAR robtarget pEnd;
+    
+        s := cellSize * 0.20;
+    
+        ! Start at the upper-left end of the diagonal
+        pStart := [[cx-s*0.65, cy-s*0.50, penLift],
+                   [0.029043357,0.000895114,0.999577752,-0.000026131],
+                   [0,1,-2,1],
+                   [9E9,9E9,9E9,9E9,9E9,9E9]];
+    
+        ! Join point at the top of the vertical stroke
+        pJoin := [[cx, cy+s*1.35, penLift],
+                  [0.029043357,0.000895114,0.999577752,-0.000026131],
+                  [0,1,-2,1],
+                  [9E9,9E9,9E9,9E9,9E9,9E9]];
+    
+        ! Bottom of the vertical stroke
+        pEnd := [[cx, cy-s*1.35, penLift],
+                 [0.029043357,0.000895114,0.999577752,-0.000026131],
+                 [0,1,-2,1],
+                 [9E9,9E9,9E9,9E9,9E9,9E9]];
+    
+        ! Move above the start point
+        MoveJ pStart, V40, fine, toolPen\WObj:=wobjA3;
+    
+        ! Lower pen
+        MoveL Offs(pStart,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+    
+        ! Draw diagonal towards the vertical stroke
+        MoveL Offs(pJoin,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+    
+        ! Draw vertical stroke
+        MoveL Offs(pEnd,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+    
+        ! Lift pen
+        MoveL pEnd, V40, fine, toolPen\WObj:=wobjA3;
+    ENDPROC
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!                     2                        !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+   
+
+    PROC DrawDigit2(num cx, num cy, num cellSize)
+        VAR num s;
+        VAR robtarget pStart;
+        VAR robtarget pCurve1;
+        VAR robtarget pCurve2;
+        VAR robtarget pCurve3;
+        VAR robtarget pMid;
+        VAR robtarget pBottomLeft;
+        VAR robtarget pBottomRight;
+
+        s := cellSize * 0.20;
+
+        ! Start at upper-left
+        pStart := [[cx-s, cy+s*0.50, penLift],
+                   [0.029043357,0.000895114,0.999577752,-0.000026131],
+                   [0,1,-2,1],
+                   [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        ! Rounded top curve
+        pCurve1 := [[cx-s*0.75, cy+s*0.90, penLift],
+                    [0.029043357,0.000895114,0.999577752,-0.000026131],
+                    [0,1,-2,1],
+                    [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        pCurve2 := [[cx, cy+s*1.35, penLift],
+                    [0.029043357,0.000895114,0.999577752,-0.000026131],
+                    [0,1,-2,1],
+                    [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        pCurve3 := [[cx+s*0.75, cy+s*0.90, penLift],
+                    [0.029043357,0.000895114,0.999577752,-0.000026131],
+                    [0,1,-2,1],
+                    [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        ! Diagonal down to the left
+        pMid := [[cx+s*0.75, cy+s*0.15, penLift],
+                 [0.029043357,0.000895114,0.999577752,-0.000026131],
+                 [0,1,-2,1],
+                 [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        pBottomLeft := [[cx-s, cy-s*1.35, penLift],
+                        [0.029043357,0.000895114,0.999577752,-0.000026131],
+                        [0,1,-2,1],
+                        [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        pBottomRight := [[cx+s, cy-s*1.35, penLift],
+                         [0.029043357,0.000895114,0.999577752,-0.000026131],
+                         [0,1,-2,1],
+                         [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        ! Move above the start point
+        MoveJ pStart, V40, fine, toolPen\WObj:=wobjA3;
+
+        ! Lower pen
+        MoveL Offs(pStart,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+
+        ! Rounded upper curve
+        MoveL Offs(pCurve1,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+        MoveL Offs(pCurve2,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+        MoveL Offs(pCurve3,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+
+        ! Diagonal
+        MoveL Offs(pMid,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+
+        ! Bottom stroke
+        MoveL Offs(pBottomLeft,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+        MoveL Offs(pBottomRight,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+
+        ! Lift pen
+        MoveL pBottomRight, V40, fine, toolPen\WObj:=wobjA3;
+    ENDPROC
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!                     3                        !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+    
+
+    PROC DrawDigit3(num cx, num cy, num cellSize)
+        VAR num s;
+        VAR robtarget pStart;
+        VAR robtarget pTopMid;
+        VAR robtarget pTopRight;
+        VAR robtarget pMiddle;
+        VAR robtarget pLowerStart;
+        VAR robtarget pLowerMid;
+        VAR robtarget pBottom;
+
+        s := cellSize * 0.20;
+
+        ! Start at upper-left
+        pStart := [[cx-s, cy+s*0.65, penLift],
+                   [0.029043357,0.000895114,0.999577752,-0.000026131],
+                   [0,1,-2,1],
+                   [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        ! Midpoint of upper curve
+        pTopMid := [[cx+s*0.35, cy+s*0.95, penLift],
+                    [0.029043357,0.000895114,0.999577752,-0.000026131],
+                    [0,1,-2,1],
+                    [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        ! End of upper curve
+        pTopRight := [[cx+s, cy+s*0.40, penLift],
+                      [0.029043357,0.000895114,0.999577752,-0.000026131],
+                      [0,1,-2,1],
+                      [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        ! Inward point at the middle of the digit
+        pMiddle := [[cx-s*0.55, cy-s*0.05, penLift],
+                    [0.029043357,0.000895114,0.999577752,-0.000026131],
+                    [0,1,-2,1],
+                    [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        ! Start of lower curve
+        pLowerStart := [[cx+s*0.35, cy-s*0.15, penLift],
+                        [0.029043357,0.000895114,0.999577752,-0.000026131],
+                        [0,1,-2,1],
+                        [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        ! Midpoint on the outer lower curve
+        pLowerMid := [[cx+s*0.95, cy-s*0.80, penLift],
+                      [0.029043357,0.000895114,0.999577752,-0.000026131],
+                      [0,1,-2,1],
+                      [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        ! Bottom-left endpoint
+        pBottom := [[cx-s*0.40, cy-s*1.25, penLift],
+                    [0.029043357,0.000895114,0.999577752,-0.000026131],
+                    [0,1,-2,1],
+                    [9E9,9E9,9E9,9E9,9E9,9E9]];
+
+        ! Move above the start
+        MoveJ pStart, V40, fine, toolPen\WObj:=wobjA3;
+
+        ! Lower pen
+        MoveL Offs(pStart,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+
+        ! 1. Upper curve
+        MoveC Offs(pTopMid,0,0,-penLift),
+              Offs(pTopRight,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+
+        ! 2. Diagonal inward toward the middle
+        MoveL Offs(pMiddle,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+
+        ! 3. Short straight transition
+        MoveL Offs(pLowerStart,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+
+        ! 4. Rounded lower curve
+        MoveC Offs(pLowerMid,0,0,-penLift),
+              Offs(pBottom,0,0,-penLift),
+              V40, fine, toolPen\WObj:=wobjA3;
+
+        ! Lift pen
+        MoveL pBottom, V40, fine, toolPen\WObj:=wobjA3;
+    ENDPROC
+
+
+
+    
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!                     4                        !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+    
+    
+    PROC DrawDigit4(num cx, num cy, num cellSize)
+        VAR num s;
+        VAR robtarget pStart;
+        VAR robtarget pLeft;
+        VAR robtarget pDiagonalTop;
+        VAR robtarget pVerticalBottom;
+    
+        s := cellSize * 0.20;
+    
+        pStart := [[cx+s, cy-s*0.20, penLift],
+            [0.029043357,0.000895114,0.999577752,-0.000026131],
+            [0,1,-2,1],
+            [9E9,9E9,9E9,9E9,9E9,9E9]];
+    
+        pLeft := [[cx-s, cy-s*0.20, penLift],
+            [0.029043357,0.000895114,0.999577752,-0.000026131],
+            [0,1,-2,1],
+            [9E9,9E9,9E9,9E9,9E9,9E9]];
+    
+        pDiagonalTop := [[cx+s, cy+s, penLift],
+            [0.029043357,0.000895114,0.999577752,-0.000026131],
+            [0,1,-2,1],
+            [9E9,9E9,9E9,9E9,9E9,9E9]];
+    
+        pVerticalBottom := [[cx+s, cy-s*1.35, penLift],
+            [0.029043357,0.000895114,0.999577752,-0.000026131],
+            [0,1,-2,1],
+            [9E9,9E9,9E9,9E9,9E9,9E9]];
+    
+        MoveJ pStart,V40,fine,toolPen\WObj:=wobjA3;
+        MoveL Offs(pStart,0,0,-penLift),V40,fine,toolPen\WObj:=wobjA3;
+        MoveL Offs(pLeft,0,0,-penLift),V40,fine,toolPen\WObj:=wobjA3;
+        MoveL Offs(pDiagonalTop,0,0,-penLift),V40,fine,toolPen\WObj:=wobjA3;
+        MoveL Offs(pVerticalBottom,0,0,-penLift),V40,fine,toolPen\WObj:=wobjA3;
+        MoveL pVerticalBottom,V40,fine,toolPen\WObj:=wobjA3;
+    
+    ENDPROC
+
+
+    
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!                WriteBoard                    !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+    PROC WriteBoard(num board)
+        VAR num row;
+        VAR num col;
+        VAR num digit;
+
+        FOR row FROM 1 TO gridSize DO
+            FOR col FROM 1 TO gridSize DO
+
+                digit := sudokuBoard{row,col};
+
+                IF digit <> 0 THEN
+                    WriteDigit board,row,col,digit;
+                ENDIF
+
+            ENDFOR
+        ENDFOR
+    ENDPROC
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!                 SetCell                      !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    
+    
+    
+    PROC SetCell(num board, num row, num col, num digit)
+        IF board < 1 OR board > 2 THEN
+            TPWrite "Error: board must be 1 or 2";
+            RETURN;
+        ENDIF
+
+        IF row < 1 OR row > gridSize OR
+           col < 1 OR col > gridSize THEN
+            TPWrite "Error: row or column out of range";
+            RETURN;
+        ENDIF
+
+        IF digit < 0 OR digit > 4 THEN
+            TPWrite "Error: digit must be 0-4";
+            RETURN;
+        ENDIF
+
+        sudokuBoard{row,col} := digit;
+
+        TPWrite "Sudoku cell updated";
+    ENDPROC
+
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!                RecieveCommand                !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    
+    
+    PROC ReceiveCommand()
+    
+        VAR bool messageComplete;
+    
+        receivedCommand := "";
+        receivedChar := "";
+        messageComplete := FALSE;
+    
+        WHILE NOT messageComplete DO
+    
+            SocketReceive pcSocket
+                \Str:=receivedChar
+                \ReadNoOfBytes:=1;
+    
+            ! Check for newline
+            IF receivedChar = "\0A" THEN
+    
+                messageComplete := TRUE;
+    
+            ELSEIF receivedChar <> "\0D" THEN
+    
+                receivedCommand :=
+                    receivedCommand + receivedChar;
+    
+            ENDIF
+    
+            ! Prevent excessively long messages
+            IF StrLen(receivedCommand) > 30 THEN
+                TPWrite "Command too long";
+                messageComplete := TRUE;
+                receivedCommand := "";
+            ENDIF
+    
+        ENDWHILE
+    
+    ENDPROC
+    
+    
+    
+    
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!                MAIN                          !!!
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! 
+    
+    
+    
+    PROC main()
+    
+        TPWrite "Starting TCP connection";
+    
+        SocketCreate pcSocket;
+    
+        SocketConnect pcSocket, PC_IP, PC_PORT;
+    
+        TPWrite "Connected to Python";
+    
+        ! Move robot outside camera view
+        GoToPark;
+    
+        WHILE TRUE DO
+    
+            ReceiveCommand;
+    
+            IF StrLen(receivedCommand) > 0 THEN
+                ProcessCommand receivedCommand;
+            ENDIF
+    
+        ENDWHILE
+    
+    ENDPROC
+
+
+ENDMODULE

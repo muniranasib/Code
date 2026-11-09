@@ -4,8 +4,20 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from project_paths import TEMPLATE_DIR
-from sudoku_solver import format_board
+
+from project_paths import TEMPLATE_DIR, IMAGE_DIR, GENERATED_IMAGE_DIR
+from sudoku_solver import format_board, solve_sudoku, is_valid_solution
+from coordinate_transform import load_calibration, image_points_to_robot
+from digit_classifier import train_classifier, predict_digit
+
+BOARD_SIZES_MM = {
+    "mini": (120.0, 120.0),
+    "small": (150.0, 150.0),
+
+}
+
+# Maximum allowed relative difference between measured and expected board size.
+BOARD_SIZE_TOLERANCE = 0.10
 
 BOARD_PIXELS = 800
 MACTH_THRESHOLD = 0.35  # Threshold for template matching
@@ -24,15 +36,53 @@ def order_corners(points):
 
     return np.array([top_left, top_right, bottom_right, bottom_left], dtype=np.float32)
 
+def get_board_cell_positions(corners):
+    """Calculate the pixel coordinates of the center of each Sudoku cell."""
 
-def find_board_corners(image):
+    positions = []
+
+    for row in range(4):
+        for col in range(4):
+
+            # Calculate relative position inside the board
+            u = (col + 0.5) / 4
+            v = (row + 0.5) / 4
+
+            # Interpolate between the four detected corners
+            top = corners[0] * (1 - u) + corners[1] * u
+            bottom = corners[3] * (1 - u) + corners[2] * u
+
+            center = top * (1 - v) + bottom * v
+
+            positions.append({
+                "row": row + 1,
+                "col": col + 1,
+                "x": float(center[0]),
+                "y": float(center[1])
+            })
+
+    return positions
+
+def find_board_corners(image, board_size="auto", size_tolerance=BOARD_SIZE_TOLERANCE, calibration_matrix=None):
 
     if image is None or image.size == 0:
         raise ValueError("Could not read the image.")
+    
+    if size_tolerance < 0:
+        raise ValueError("size_tolerance cannot be negative.")
 
+    # Load camera calibration
+    if calibration_matrix is None:
+        calibration_matrix = load_calibration()
+
+    calibration_matrix = np.asarray(calibration_matrix, dtype=np.float64)
+
+    if calibration_matrix.shape != (3, 3):
+        raise ValueError("Calibration matrix must have shape (3, 3).")
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5),0) 
+
     edges = cv2.Canny(blurred, 40, 140)
     edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
 
@@ -40,24 +90,124 @@ def find_board_corners(image):
     image_area = image.shape[0] * image.shape[1]
     candidates = []
 
+    if board_size == "auto":
+        expected_sizes = BOARD_SIZES_MM
+    else: expected_sizes = {board_size: BOARD_SIZES_MM[board_size]}
+
+     # Select expected board dimensions
+    if board_size == "auto":
+        expected_sizes = BOARD_SIZES_MM
+    else:
+        expected_sizes = {
+            board_size: BOARD_SIZES_MM[board_size]
+        }
+
+
     for contour in contours:
         area = cv2.contourArea(contour)
 
-        if area < image_area * 0.15:
+        if area < image_area * 0.01:
             continue
 
         perimiter = cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, 0.02 * perimiter, True)
 
-        if len(approx) == 4 and cv2.isContourConvex(approx):
-            candidates.append((area, approx.reshape(4, 2)))
+        if len(approx) != 4 or not cv2.isContourConvex(approx):
+            continue
+
+        corners_px = order_corners(approx.reshape(4,2)) 
+        
+       # Convert pixel coordinates to robot coordinates in mm.
+        try:
+            corners_mm = np.asarray(
+                image_points_to_robot(
+                    corners_px,
+                    calibration_matrix
+                ),
+                dtype=np.float64
+            )
+        except (ValueError, cv2.error):
+            continue
+
+        tl, tr, br, bl = corners_mm
+
+        # Calculate physical width and height.
+        width_mm = (
+            np.linalg.norm(tr - tl) +
+            np.linalg.norm(br - bl)
+        ) / 2.0
+
+        height_mm = (
+            np.linalg.norm(bl - tl) +
+            np.linalg.norm(br - tr)
+        ) / 2.0
+
+        if width_mm <= 0 or height_mm <= 0:
+            continue
+
+        # The Sudoku board should be approximately square.
+        squareness_error = (
+            abs(width_mm - height_mm) /
+            max(width_mm, height_mm)
+        )
+
+        if squareness_error > 0.15:
+            continue
+
+        # Compare the measured dimensions with the expected dimensions.
+        for size_name, (expected_width, expected_height) in expected_sizes.items():
+
+            width_error = abs(width_mm - expected_width) / expected_width
+            height_error = abs(height_mm - expected_height) / expected_height
+
+            if ( width_error <= size_tolerance and height_error <= size_tolerance):
+
+                size_error = (width_error + height_error) / 2.0
+
+                score = size_error + squareness_error * 0.25
+
+                candidates.append((
+                    score,
+                    area,
+                    corners_px,
+                    size_name,
+                    width_mm,
+                    height_mm
+                ))
 
     if not candidates:
-        raise RuntimeError("Could not find the Sudoku board. Take a clearer photo with all four outside corners visible and with good contrast")
+        expected_text = ", ".join(
+            f"{name}: {width:g} x {height:g} mm"
+            for name, (width, height) in expected_sizes.items()
+            )
 
-    best_corners = max(candidates, key=lambda item: item[0])[1]
-    
-    return order_corners(best_corners)
+        raise RuntimeError(
+                "Could not find a Sudoku board matching the configured physical size. "
+                f"Expected {expected_text} "
+                f"(tolerance {size_tolerance * 100:.0f}%). "
+                "Check that the calibration file is correct and all four outer "
+                "board corners are visible."
+            )
+
+    # Select the candidate closest to the expected physical dimensions.
+    best = min(
+        candidates,
+        key=lambda item: (item[0], -item[1])
+    )
+
+    _, _, best_corners, detected_size, width_mm, height_mm = best
+
+    print(
+        f"Detected {detected_size} Sudoku board: "
+        f"{width_mm:.1f} x {height_mm:.1f} mm"
+    )
+
+    return {
+    "corners": best_corners,
+    "board_size": detected_size,
+    "width_mm": width_mm,
+    "height_mm": height_mm
+}
 
 
 
@@ -167,7 +317,7 @@ def normalize_digit(cell):
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
 
     _, binary = cv2.threshold(
-        blurred,
+        blurred, 
         0,
         255,
         cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
@@ -217,19 +367,60 @@ def normalize_digit(cell):
 
 
 
-
-def process_image(image_path, output_dir):
+def process_image(image_path, output_dir=None, board_size="auto"):
     image_path = Path(image_path).expanduser().resolve()
     image = cv2.imread(str(image_path))
 
     if image is None:
         raise FileNotFoundError(f'Could not load image: {image_path}')
 
-    corners = find_board_corners(image)
+    detection = find_board_corners(
+    image,
+    board_size=board_size
+)
+
+    corners = detection["corners"]
+    detected_size = detection["board_size"]
+
+    #Rotate the board 180 degrees to correct digit orientation
     rectified = rectify_board(image, corners, output_size=BOARD_PIXELS)
     cells = split_cells(rectified)
 
-    destination_dir = Path(output_dir).expanduser().resolve() if output_dir else image_path.parent
+    # Save original and processed cells.
+    cells_dir = GENERATED_IMAGE_DIR / "cells"
+    processed_dir = GENERATED_IMAGE_DIR / "processed_cells"
+
+    cells_dir.mkdir(parents=True, exist_ok=True)
+    processed_dir.mkdir(parents=True, exist_ok=True)
+
+    for row in range(4):
+        for col in range(4):
+
+            cell = cells[row][col]
+
+            # Save original cell.
+            cell_path = cells_dir / f"cell_{row}_{col}.png"
+
+            if not cv2.imwrite(str(cell_path), cell):
+                raise OSError(f"Could not save cell: {cell_path}")
+
+            # Save normalized cell.
+            processed_path = (
+                processed_dir / f"cell_{row}_{col}.png"
+            )
+
+            if is_empty_cell(cell):
+                processed_cell = np.zeros((64, 64), dtype=np.uint8)
+            else:
+                processed_cell = normalize_digit(cell)
+
+            if not cv2.imwrite(str(processed_path), processed_cell):
+                raise OSError(
+                    f"Could not save processed cell: {processed_path}"
+                )
+
+
+    destination_dir = Path(output_dir).expanduser().resolve() if output_dir else GENERATED_IMAGE_DIR
     destination_dir.mkdir(parents=True, exist_ok=True)
     warped_path = destination_dir / f'{image_path.stem}_board_warped.png'
     preview_path = destination_dir / f"{image_path.stem}_grid_preview.png"
@@ -248,6 +439,9 @@ def process_image(image_path, output_dir):
         "corners": corners,
         "warped_path": warped_path,
         "preview_path": preview_path,
+        "board_size": detected_size,
+        "width_mm": detection["width_mm"],
+        "height_mm": detection["height_mm"],
     }
 
 
@@ -287,8 +481,8 @@ def test_preprocess_cell(cell):
     cv2.imshow("Original cell", cell)
     cv2.imshow("Preprocessed cell", normalized)
 
-    cv2.imwrite("test_original.png", cell)
-    cv2.imwrite("test_preprocessed.png", normalized)
+    cv2.imwrite(str(GENERATED_IMAGE_DIR / "test_original.png"), cell)
+    cv2.imwrite(str(GENERATED_IMAGE_DIR / "test_preprocessed.png"), normalized)
 
     print("Image size:", normalized.shape)
     print("Pixel values:", set(normalized.flatten()))
@@ -346,68 +540,69 @@ def load_digit_templates():
     return templates
 
 
-def recognize_digit(cell, templates):
-    "Identifies digit (1, 2, 3 or 4)"
-    "Template Matching - algorithm"
+def recognize_digit(cell, knn):
 
-    # Normalize the cell to a binary image
     digit_image = normalize_digit(cell)
 
-    best_digit = None
-    best_score = -1
+    prediction, distances = predict_digit(
+        digit_image,
+        knn
+    )
 
-    # Compare with all stored templates
-    for digit, digit_templates in templates.items():
-
-        for template in digit_templates:
-                # Match the template with the cell image
-                result = cv2.matchTemplate(digit_image, template, cv2.TM_CCOEFF_NORMED)
-                score = float(result[0][0]) # Get the matching score
-
-                if score > best_score:
-                    best_score = score
-                    best_digit = digit
-
-    if best_score < MACTH_THRESHOLD:
-        raise ValueError(
-            f"Uncertain digit recognition. "
-            f"Best match: {best_digit}, score: {best_score:.3f}"
-        )
-
-    return best_digit
+    return prediction
 
 
 
 
-
-def recognize_board(cells, templates):
-    "Recognizes all cells cells and builds a string representation of the board."
+def recognize_board(cells, knn):
 
     sudoku_string = ""
 
     for row in range(4):
         for col in range(4):
+
             cell = cells[row][col]
 
             if is_empty_cell(cell):
                 sudoku_string += "0"
+
             else:
                 try:
-                    digit = recognize_digit(cell, templates)
+                    digit = recognize_digit(cell, knn)
                     sudoku_string += digit
 
-
                 except ValueError as error:
-                     raise ValueError(
-                        f"Recognition failed at row {row}, "
-                        f"column {col}: {error}"
+                    raise ValueError(
+                        f"Recognition failed at "
+                        f"row {row + 1}, column {col + 1}: {error}"
                     ) from error
 
     return sudoku_string
 
 
-    
+def recognize_and_solve(cells):
+    """Recognize the Sudoku board and calculate its solution."""
 
+    templates = load_digit_templates()
+
+    # Recognize the numbers from the image.
+    sudoku_string = recognize_board(cells, templates)
+
+    print("\nRecognized Sudoku:")
+    print(format_board(sudoku_string))
+
+    # Calculate the solution.
+    solution = solve_sudoku(sudoku_string)
+
+    # Validate the solution.
+    if not is_valid_solution(sudoku_string, solution):
+        raise RuntimeError("The Sudoku solver returned an invalid solution.")
+
+    print("\nSudoku solution:")
+    print(format_board(solution))
+
+    return sudoku_string, solution
+    
 
 
 def main():
@@ -418,7 +613,7 @@ def main():
     parser.add_argument(
         "image",
         nargs="?",
-        default="sudoku_photo.jpg",
+        default=str(IMAGE_DIR / "sudoku_photo.jpg"),
         help="Path to the Sudoku photo",
     )
 
@@ -434,19 +629,7 @@ def main():
 
     templates = load_digit_templates()
     sudoku_string = recognize_board(result["cells"], templates)
-
-    ######TESTING######
-    test_preprocess_cell(result["cells"][1][0])
-
-    # Tester at alle cellene er tomme eller ikke
-    for row in range(4):
-        for col in range(4):
-            empty = is_empty_cell(result["cells"][row][col])
-            print(f"Row {row + 1}, Col {col + 1}: Empty = {empty}")
-
-    #Tilbake til vanlig main-funksjon
-    #ish
-    sudoku_string = recognize_board(result["cells"])
+ 
 
     print("Recognized Sudoku: ")
     print(format_board(sudoku_string))

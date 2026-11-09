@@ -1,5 +1,5 @@
 
-from main import load_puzzles
+from sudoku_data import load_puzzles
 import random
 
 

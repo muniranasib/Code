@@ -1,11 +1,8 @@
 from pathlib import Path
 
-DATASET_PATH = (
-    Path(__file__).resolve().parent
-    / "4x4_sudoku_unique_solution.csv"
-)
+from project_paths import DATA_DIR
 
-
+DATASET_PATH = DATA_DIR / "4x4_sudoku_unique_solution.csv"
 
 
 def load_puzzles():

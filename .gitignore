@@ -1,0 +1,8 @@
+
+# Local archives and documents
+*.zip
+*.pdf
+
+# Python cache
+__pycache__/
+*.py[cod]
